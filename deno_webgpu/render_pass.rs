@@ -3,10 +3,10 @@
 use deno_core::error::type_error;
 use deno_core::error::AnyError;
 use deno_core::op;
+use deno_core::JsBuffer;
 use deno_core::OpState;
 use deno_core::Resource;
 use deno_core::ResourceId;
-use deno_core::ZeroCopyBuf;
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -235,7 +235,7 @@ pub fn op_webgpu_render_pass_set_bind_group(
     render_pass_rid: ResourceId,
     index: u32,
     bind_group: u32,
-    dynamic_offsets_data: ZeroCopyBuf,
+    dynamic_offsets_data: JsBuffer,
     dynamic_offsets_data_start: usize,
     dynamic_offsets_data_length: usize,
 ) -> Result<WebGpuResult, AnyError> {

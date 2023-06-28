@@ -4,10 +4,10 @@ use deno_core::error::type_error;
 use deno_core::error::AnyError;
 use deno_core::futures::channel::oneshot;
 use deno_core::op;
+use deno_core::JsBuffer;
 use deno_core::OpState;
 use deno_core::Resource;
 use deno_core::ResourceId;
-use deno_core::ZeroCopyBuf;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::convert::TryFrom;
@@ -149,7 +149,7 @@ pub fn op_webgpu_buffer_get_mapped_range(
     buffer_rid: ResourceId,
     offset: u64,
     size: Option<u64>,
-    mut buf: ZeroCopyBuf,
+    mut buf: JsBuffer,
 ) -> Result<WebGpuResult, AnyError> {
     let instance = state.borrow::<super::Instance>();
     let buffer_resource = state.resource_table.get::<WebGpuBuffer>(buffer_rid)?;
@@ -177,7 +177,7 @@ pub fn op_webgpu_buffer_unmap(
     state: &mut OpState,
     buffer_rid: ResourceId,
     mapped_rid: ResourceId,
-    buf: Option<ZeroCopyBuf>,
+    buf: Option<JsBuffer>,
 ) -> Result<WebGpuResult, AnyError> {
     let mapped_resource = state
         .resource_table

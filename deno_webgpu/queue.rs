@@ -2,9 +2,9 @@
 
 use deno_core::error::AnyError;
 use deno_core::op;
+use deno_core::JsBuffer;
 use deno_core::OpState;
 use deno_core::ResourceId;
-use deno_core::ZeroCopyBuf;
 use serde::Deserialize;
 
 use super::error::WebGpuResult;
@@ -67,7 +67,7 @@ pub fn op_webgpu_write_buffer(
     buffer_offset: u64,
     data_offset: usize,
     size: Option<usize>,
-    buf: ZeroCopyBuf,
+    buf: JsBuffer,
 ) -> Result<WebGpuResult, AnyError> {
     let instance = state.borrow::<super::Instance>();
     let buffer_resource = state
@@ -99,7 +99,7 @@ pub fn op_webgpu_write_texture(
     destination: super::command_encoder::GpuImageCopyTexture,
     data_layout: GpuImageDataLayout,
     size: wgpu_types::Extent3d,
-    buf: ZeroCopyBuf,
+    buf: JsBuffer,
 ) -> Result<WebGpuResult, AnyError> {
     let instance = state.borrow::<super::Instance>();
     let texture_resource = state

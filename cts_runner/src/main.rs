@@ -12,9 +12,10 @@ mod native {
     use deno_core::resolve_url_or_path;
     use deno_core::serde_json::json;
     use deno_core::v8;
+    use deno_core::JsBuffer;
     use deno_core::JsRuntime;
     use deno_core::RuntimeOptions;
-    use deno_core::ZeroCopyBuf;
+    use deno_core::ToJsBuffer;
     use deno_web::BlobStore;
     use termcolor::Ansi;
     use termcolor::Color::Red;
@@ -95,16 +96,16 @@ mod native {
     }
 
     #[op]
-    fn op_read_file_sync(path: String) -> Result<ZeroCopyBuf, AnyError> {
+    fn op_read_file_sync(path: String) -> Result<ToJsBuffer, AnyError> {
         let path = std::path::Path::new(&path);
         let mut file = std::fs::File::open(path)?;
         let mut buf = Vec::new();
         file.read_to_end(&mut buf)?;
-        Ok(ZeroCopyBuf::from(buf))
+        Ok(ToJsBuffer::from(buf))
     }
 
     #[op]
-    fn op_write_file_sync(path: String, buf: ZeroCopyBuf) -> Result<(), AnyError> {
+    fn op_write_file_sync(path: String, buf: JsBuffer) -> Result<(), AnyError> {
         let path = std::path::Path::new(&path);
         let mut file = std::fs::File::create(path)?;
         file.write_all(&buf)?;

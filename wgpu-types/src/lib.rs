@@ -5981,18 +5981,23 @@ pub struct ImageSubresourceRange {
     /// Aspect of the texture. Color textures must be [`TextureAspect::All`][TAA].
     ///
     /// [TAA]: ../wgpu/enum.TextureAspect.html#variant.All
+    #[cfg_attr(feature = "serde", serde(default))]
     pub aspect: TextureAspect,
     /// Base mip level.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub base_mip_level: u32,
     /// Mip level count.
     /// If `Some(count)`, `base_mip_level + count` must be less or equal to underlying texture mip count.
     /// If `None`, considered to include the rest of the mipmap levels, but at least 1 in total.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub mip_level_count: Option<u32>,
     /// Base array layer.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub base_array_layer: u32,
     /// Layer count.
     /// If `Some(count)`, `base_array_layer + count` must be less or equal to the underlying array count.
     /// If `None`, considered to include the rest of the array layers, but at least 1 in total.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub array_layer_count: Option<u32>,
 }
 
