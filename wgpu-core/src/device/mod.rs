@@ -1,6 +1,5 @@
 use crate::{
     binding_model,
-    hal_api::HalApi,
     hub::Hub,
     id::{BindGroupLayoutId, PipelineLayoutId},
     resource::{
@@ -12,19 +11,17 @@ use crate::{
 };
 
 use arrayvec::ArrayVec;
-use hal::Device as _;
 use smallvec::SmallVec;
-use std::os::raw::c_char;
 use thiserror::Error;
 use wgt::{BufferAddress, DeviceLostReason, TextureFormat};
 
-use std::{iter, num::NonZeroU32, ptr};
+use std::num::NonZeroU32;
 
-pub mod any_device;
 pub(crate) mod bgl;
 pub mod global;
 mod life;
 pub mod queue;
+pub mod ray_tracing;
 pub mod resource;
 #[cfg(any(feature = "trace", feature = "replay"))]
 pub mod trace;
@@ -39,7 +36,7 @@ pub(crate) const ZERO_BUFFER_SIZE: BufferAddress = 512 << 10;
 // See https://github.com/gfx-rs/wgpu/issues/4589. 60s to reduce the chances of this.
 const CLEANUP_WAIT_MS: u32 = 60000;
 
-const ENTRYPOINT_FAILURE_ERROR: &str = "The given EntryPoint is Invalid";
+pub(crate) const ENTRYPOINT_FAILURE_ERROR: &str = "The given EntryPoint is Invalid";
 
 pub type DeviceDescriptor<'a> = wgt::DeviceDescriptor<Label<'a>>;
 
@@ -178,61 +175,22 @@ impl UserClosures {
         // a on_submitted_work_done callback to be fired before the on_submitted_work_done callback.
         for (mut operation, status) in self.mappings {
             if let Some(callback) = operation.callback.take() {
-                callback.call(status);
+                callback(status);
             }
         }
         for closure in self.submissions {
-            closure.call();
+            closure();
         }
         for invocation in self.device_lost_invocations {
-            invocation
-                .closure
-                .call(invocation.reason, invocation.message);
+            (invocation.closure)(invocation.reason, invocation.message);
         }
     }
 }
 
 #[cfg(send_sync)]
-pub type DeviceLostCallback = Box<dyn Fn(DeviceLostReason, String) + Send + 'static>;
+pub type DeviceLostClosure = Box<dyn FnOnce(DeviceLostReason, String) + Send + 'static>;
 #[cfg(not(send_sync))]
-pub type DeviceLostCallback = Box<dyn Fn(DeviceLostReason, String) + 'static>;
-
-pub struct DeviceLostClosureRust {
-    pub callback: DeviceLostCallback,
-    consumed: bool,
-}
-
-impl Drop for DeviceLostClosureRust {
-    fn drop(&mut self) {
-        if !self.consumed {
-            panic!("DeviceLostClosureRust must be consumed before it is dropped.");
-        }
-    }
-}
-
-#[repr(C)]
-pub struct DeviceLostClosureC {
-    pub callback: unsafe extern "C" fn(user_data: *mut u8, reason: u8, message: *const c_char),
-    pub user_data: *mut u8,
-    consumed: bool,
-}
-
-#[cfg(send_sync)]
-unsafe impl Send for DeviceLostClosureC {}
-
-impl Drop for DeviceLostClosureC {
-    fn drop(&mut self) {
-        if !self.consumed {
-            panic!("DeviceLostClosureC must be consumed before it is dropped.");
-        }
-    }
-}
-
-pub struct DeviceLostClosure {
-    // We wrap this so creating the enum in the C variant can be unsafe,
-    // allowing our call function to be safe.
-    inner: DeviceLostClosureInner,
-}
+pub type DeviceLostClosure = Box<dyn FnOnce(DeviceLostReason, String) + 'static>;
 
 pub struct DeviceLostInvocation {
     closure: DeviceLostClosure,
@@ -240,88 +198,27 @@ pub struct DeviceLostInvocation {
     message: String,
 }
 
-enum DeviceLostClosureInner {
-    Rust { inner: DeviceLostClosureRust },
-    C { inner: DeviceLostClosureC },
-}
-
-impl DeviceLostClosure {
-    pub fn from_rust(callback: DeviceLostCallback) -> Self {
-        let inner = DeviceLostClosureRust {
-            callback,
-            consumed: false,
-        };
-        Self {
-            inner: DeviceLostClosureInner::Rust { inner },
-        }
-    }
-
-    /// # Safety
-    ///
-    /// - The callback pointer must be valid to call with the provided `user_data`
-    ///   pointer.
-    ///
-    /// - Both pointers must point to `'static` data, as the callback may happen at
-    ///   an unspecified time.
-    pub unsafe fn from_c(mut closure: DeviceLostClosureC) -> Self {
-        // Build an inner with the values from closure, ensuring that
-        // inner.consumed is false.
-        let inner = DeviceLostClosureC {
-            callback: closure.callback,
-            user_data: closure.user_data,
-            consumed: false,
-        };
-
-        // Mark the original closure as consumed, so we can safely drop it.
-        closure.consumed = true;
-
-        Self {
-            inner: DeviceLostClosureInner::C { inner },
-        }
-    }
-
-    pub(crate) fn call(self, reason: DeviceLostReason, message: String) {
-        match self.inner {
-            DeviceLostClosureInner::Rust { mut inner } => {
-                inner.consumed = true;
-
-                (inner.callback)(reason, message)
-            }
-            // SAFETY: the contract of the call to from_c says that this unsafe is sound.
-            DeviceLostClosureInner::C { mut inner } => unsafe {
-                inner.consumed = true;
-
-                // Ensure message is structured as a null-terminated C string. It only
-                // needs to live as long as the callback invocation.
-                let message = std::ffi::CString::new(message).unwrap();
-                (inner.callback)(inner.user_data, reason as u8, message.as_ptr())
-            },
-        }
-    }
-}
-
-fn map_buffer<A: HalApi>(
-    raw: &A::Device,
-    buffer: &Buffer<A>,
+pub(crate) fn map_buffer(
+    buffer: &Buffer,
     offset: BufferAddress,
     size: BufferAddress,
     kind: HostMap,
     snatch_guard: &SnatchGuard,
-) -> Result<ptr::NonNull<u8>, BufferAccessError> {
+) -> Result<hal::BufferMapping, BufferAccessError> {
+    let raw_device = buffer.device.raw();
     let raw_buffer = buffer.try_raw(snatch_guard)?;
     let mapping = unsafe {
-        raw.map_buffer(raw_buffer, offset..offset + size)
-            .map_err(DeviceError::from)?
+        raw_device
+            .map_buffer(raw_buffer, offset..offset + size)
+            .map_err(|e| buffer.device.handle_hal_error(e))?
     };
 
-    *buffer.sync_mapped_writes.lock() = match kind {
-        HostMap::Read if !mapping.is_coherent => unsafe {
-            raw.invalidate_mapped_ranges(raw_buffer, iter::once(offset..offset + size));
-            None
-        },
-        HostMap::Write if !mapping.is_coherent => Some(offset..offset + size),
-        _ => None,
-    };
+    if !mapping.is_coherent && kind == HostMap::Read {
+        #[allow(clippy::single_range_in_vec_init)]
+        unsafe {
+            raw_device.invalidate_mapped_ranges(raw_buffer, &[offset..offset + size]);
+        }
+    }
 
     assert_eq!(offset % wgt::COPY_BUFFER_ALIGNMENT, 0);
     assert_eq!(size % wgt::COPY_BUFFER_ALIGNMENT, 0);
@@ -339,28 +236,47 @@ fn map_buffer<A: HalApi>(
     // If this is a write mapping zeroing out the memory here is the only
     // reasonable way as all data is pushed to GPU anyways.
 
-    // No need to flush if it is flushed later anyways.
-    let zero_init_needs_flush_now =
-        mapping.is_coherent && buffer.sync_mapped_writes.lock().is_none();
     let mapped = unsafe { std::slice::from_raw_parts_mut(mapping.ptr.as_ptr(), size as usize) };
 
-    for uninitialized in buffer
-        .initialization_status
-        .write()
-        .drain(offset..(size + offset))
+    // We can't call flush_mapped_ranges in this case, so we can't drain the uninitialized ranges either
+    if !mapping.is_coherent
+        && kind == HostMap::Read
+        && !buffer.usage.contains(wgt::BufferUsages::MAP_WRITE)
     {
-        // The mapping's pointer is already offset, however we track the
-        // uninitialized range relative to the buffer's start.
-        let fill_range =
-            (uninitialized.start - offset) as usize..(uninitialized.end - offset) as usize;
-        mapped[fill_range].fill(0);
+        for uninitialized in buffer
+            .initialization_status
+            .write()
+            .uninitialized(offset..(size + offset))
+        {
+            // The mapping's pointer is already offset, however we track the
+            // uninitialized range relative to the buffer's start.
+            let fill_range =
+                (uninitialized.start - offset) as usize..(uninitialized.end - offset) as usize;
+            mapped[fill_range].fill(0);
+        }
+    } else {
+        for uninitialized in buffer
+            .initialization_status
+            .write()
+            .drain(offset..(size + offset))
+        {
+            // The mapping's pointer is already offset, however we track the
+            // uninitialized range relative to the buffer's start.
+            let fill_range =
+                (uninitialized.start - offset) as usize..(uninitialized.end - offset) as usize;
+            mapped[fill_range].fill(0);
 
-        if zero_init_needs_flush_now {
-            unsafe { raw.flush_mapped_ranges(raw_buffer, iter::once(uninitialized)) };
+            // NOTE: This is only possible when MAPPABLE_PRIMARY_BUFFERS is enabled.
+            if !mapping.is_coherent
+                && kind == HostMap::Read
+                && buffer.usage.contains(wgt::BufferUsages::MAP_WRITE)
+            {
+                unsafe { raw_device.flush_mapped_ranges(raw_buffer, &[uninitialized]) };
+            }
         }
     }
 
-    Ok(mapping.ptr)
+    Ok(mapping)
 }
 
 #[derive(Clone, Debug)]
@@ -400,18 +316,20 @@ pub enum DeviceError {
     OutOfMemory,
     #[error("Creation of a resource failed for a reason other than running out of memory.")]
     ResourceCreationFailed,
-    #[error("DeviceId is invalid")]
-    InvalidDeviceId,
     #[error(transparent)]
     DeviceMismatch(#[from] Box<DeviceMismatch>),
 }
 
-impl From<hal::DeviceError> for DeviceError {
-    fn from(error: hal::DeviceError) -> Self {
+impl DeviceError {
+    /// Only use this function in contexts where there is no `Device`.
+    ///
+    /// Use [`Device::handle_hal_error`] otherwise.
+    pub fn from_hal(error: hal::DeviceError) -> Self {
         match error {
-            hal::DeviceError::Lost => DeviceError::Lost,
-            hal::DeviceError::OutOfMemory => DeviceError::OutOfMemory,
-            hal::DeviceError::ResourceCreationFailed => DeviceError::ResourceCreationFailed,
+            hal::DeviceError::Lost => Self::Lost,
+            hal::DeviceError::OutOfMemory => Self::OutOfMemory,
+            hal::DeviceError::ResourceCreationFailed => Self::ResourceCreationFailed,
+            hal::DeviceError::Unexpected => Self::Lost,
         }
     }
 }
@@ -440,13 +358,13 @@ pub struct ImplicitPipelineIds<'a> {
 }
 
 impl ImplicitPipelineIds<'_> {
-    fn prepare<A: HalApi>(self, hub: &Hub<A>) -> ImplicitPipelineContext {
+    fn prepare(self, hub: &Hub) -> ImplicitPipelineContext {
         ImplicitPipelineContext {
-            root_id: hub.pipeline_layouts.prepare(Some(self.root_id)).into_id(),
+            root_id: hub.pipeline_layouts.prepare(Some(self.root_id)).id(),
             group_ids: self
                 .group_ids
                 .iter()
-                .map(|id_in| hub.bind_group_layouts.prepare(Some(*id_in)).into_id())
+                .map(|id_in| hub.bind_group_layouts.prepare(Some(*id_in)).id())
                 .collect(),
         }
     }
@@ -527,6 +445,10 @@ pub fn create_validator(
     caps.set(
         Caps::SUBGROUP_BARRIER,
         features.intersects(wgt::Features::SUBGROUP_BARRIER),
+    );
+    caps.set(
+        Caps::RAY_QUERY,
+        features.intersects(wgt::Features::EXPERIMENTAL_RAY_QUERY),
     );
     caps.set(
         Caps::SUBGROUP_VERTEX_STAGE,

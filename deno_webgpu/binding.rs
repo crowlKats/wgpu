@@ -10,7 +10,6 @@ use deno_core::ResourceId;
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::rc::Rc;
-use wgpu_core::gfx_select;
 
 pub(crate) struct WebGpuBindGroupLayout(
     pub(crate) crate::Instance,
@@ -22,7 +21,7 @@ impl Resource for WebGpuBindGroupLayout {
     }
 
     fn close(self: Rc<Self>) {
-        gfx_select!(self.1 => self.0.bind_group_layout_drop(self.1));
+        self.0.bind_group_layout_drop(self.1);
     }
 }
 
@@ -36,7 +35,7 @@ impl Resource for WebGpuBindGroup {
     }
 
     fn close(self: Rc<Self>) {
-        gfx_select!(self.1 => self.0.bind_group_drop(self.1));
+        self.0.bind_group_drop(self.1);
     }
 }
 
@@ -192,7 +191,7 @@ pub fn op_webgpu_create_bind_group_layout(
         entries: Cow::from(entries),
     };
 
-    gfx_put!(device => instance.device_create_bind_group_layout(
+    gfx_put!(instance.device_create_bind_group_layout(
     device,
     &descriptor,
     None
@@ -227,7 +226,7 @@ pub fn op_webgpu_create_pipeline_layout(
         push_constant_ranges: Default::default(),
     };
 
-    gfx_put!(device => instance.device_create_pipeline_layout(
+    gfx_put!(instance.device_create_pipeline_layout(
     device,
     &descriptor,
     None
@@ -306,7 +305,7 @@ pub fn op_webgpu_create_bind_group(
         entries: Cow::from(entries),
     };
 
-    gfx_put!(device => instance.device_create_bind_group(
+    gfx_put!(instance.device_create_bind_group(
     device,
     &descriptor,
     None

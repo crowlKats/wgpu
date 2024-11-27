@@ -14,7 +14,6 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 pub use wgpu_core;
-use wgpu_core::gfx_select;
 pub use wgt as wgpu_types;
 
 use error::DomExceptionOperationError;
@@ -25,16 +24,16 @@ pub const UNSTABLE_FEATURE_NAME: &str = "webgpu";
 #[macro_use]
 mod macros {
     macro_rules! gfx_put {
-    ($id:expr => $global:ident.$method:ident( $($param:expr),* ) => $state:expr, $rc:expr) => {{
-      let (val, maybe_err) = gfx_select!($id => $global.$method($($param),*));
+    ($global:ident.$method:ident( $($param:expr),* ) => $state:expr, $rc:expr) => {{
+      let (val, maybe_err) = $global.$method($($param),*);
       let rid = $state.resource_table.add($rc($global.clone(), val));
       Ok(WebGpuResult::rid_err(rid, maybe_err))
     }};
   }
 
     macro_rules! gfx_ok {
-    ($id:expr => $global:ident.$method:ident( $($param:expr),* )) => {{
-      let maybe_err = gfx_select!($id => $global.$method($($param),*)).err();
+    ($global:ident.$method:ident( $($param:expr),* )) => {{
+      let maybe_err = $global.$method($($param),*).err();
       Ok(WebGpuResult::maybe_err(maybe_err))
     }};
   }
@@ -64,7 +63,7 @@ impl Resource for WebGpuAdapter {
     }
 
     fn close(self: Rc<Self>) {
-        gfx_select!(self.1 => self.0.adapter_drop(self.1));
+        self.0.adapter_drop(self.1);
     }
 }
 
@@ -75,7 +74,7 @@ impl Resource for WebGpuDevice {
     }
 
     fn close(self: Rc<Self>) {
-        gfx_select!(self.1 => self.0.device_drop(self.1));
+        self.0.device_drop(self.1);
     }
 }
 
@@ -86,7 +85,7 @@ impl Resource for WebGpuQuerySet {
     }
 
     fn close(self: Rc<Self>) {
-        gfx_select!(self.1 => self.0.query_set_drop(self.1));
+        self.0.query_set_drop(self.1);
     }
 }
 
@@ -217,6 +216,9 @@ fn deserialize_features(features: &wgpu_types::Features) -> Vec<&'static str> {
     }
     if features.contains(wgpu_types::Features::TEXTURE_COMPRESSION_BC) {
         return_features.push("texture-compression-bc");
+    }
+    if features.contains(wgpu_types::Features::TEXTURE_COMPRESSION_BC_SLICED_3D) {
+        return_features.push("texture-compression-bc-sliced-3d");
     }
     if features.contains(wgpu_types::Features::TEXTURE_COMPRESSION_ETC2) {
         return_features.push("texture-compression-etc2");
@@ -402,10 +404,7 @@ pub fn op_webgpu_request_adapter(
         force_fallback_adapter,
         compatible_surface: None, // windowless
     };
-    let res = instance.request_adapter(
-        &descriptor,
-        wgpu_core::instance::AdapterInputs::Mask(backends, |_| None),
-    );
+    let res = instance.request_adapter(&descriptor, backends, None);
 
     let adapter = match res {
         Ok(adapter) => adapter,
@@ -415,9 +414,9 @@ pub fn op_webgpu_request_adapter(
             })
         }
     };
-    let adapter_features = gfx_select!(adapter => instance.adapter_features(adapter))?;
+    let adapter_features = instance.adapter_features(adapter);
     let features = deserialize_features(&adapter_features);
-    let adapter_limits = gfx_select!(adapter => instance.adapter_limits(adapter))?;
+    let adapter_limits = instance.adapter_limits(adapter);
 
     let instance = instance.clone();
 
@@ -463,6 +462,12 @@ impl From<GpuRequiredFeatures> for wgpu_types::Features {
         features.set(
             wgpu_types::Features::TEXTURE_COMPRESSION_BC,
             required_features.0.contains("texture-compression-bc"),
+        );
+        features.set(
+            wgpu_types::Features::TEXTURE_COMPRESSION_BC_SLICED_3D,
+            required_features
+                .0
+                .contains("texture-compression-bc-sliced-3d"),
         );
         features.set(
             wgpu_types::Features::TEXTURE_COMPRESSION_ETC2,
@@ -648,21 +653,23 @@ pub fn op_webgpu_request_device(
         memory_hints: wgpu_types::MemoryHints::default(),
     };
 
-    let (device, queue, maybe_err) = gfx_select!(adapter => instance.adapter_request_device(
-      adapter,
-      &descriptor,
-      std::env::var("DENO_WEBGPU_TRACE").ok().as_ref().map(std::path::Path::new),
-      None,
-      None
-    ));
+    let res = instance.adapter_request_device(
+        adapter,
+        &descriptor,
+        std::env::var("DENO_WEBGPU_TRACE")
+            .ok()
+            .as_ref()
+            .map(std::path::Path::new),
+        None,
+        None,
+    );
     adapter_resource.close();
-    if let Some(err) = maybe_err {
-        return Err(DomExceptionOperationError::new(&err.to_string()).into());
-    }
 
-    let device_features = gfx_select!(device => instance.device_features(device))?;
+    let (device, queue) = res.map_err(|err| DomExceptionOperationError::new(&err.to_string()))?;
+
+    let device_features = instance.device_features(device);
     let features = deserialize_features(&device_features);
-    let limits = gfx_select!(device => instance.device_limits(device))?;
+    let limits = instance.device_limits(device);
 
     let instance = instance.clone();
     let instance2 = instance.clone();
@@ -701,7 +708,7 @@ pub fn op_webgpu_request_adapter_info(
     let adapter = adapter_resource.1;
     let instance = state.borrow::<Instance>();
 
-    let info = gfx_select!(adapter => instance.adapter_get_info(adapter))?;
+    let info = instance.adapter_get_info(adapter);
     adapter_resource.close();
 
     Ok(GPUAdapterInfo {
@@ -754,7 +761,7 @@ pub fn op_webgpu_create_query_set(
         count: args.count,
     };
 
-    gfx_put!(device => instance.device_create_query_set(
+    gfx_put!(instance.device_create_query_set(
     device,
     &descriptor,
     None

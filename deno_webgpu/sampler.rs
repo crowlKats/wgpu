@@ -9,7 +9,6 @@ use deno_core::ResourceId;
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::rc::Rc;
-use wgpu_core::gfx_select;
 
 use super::error::WebGpuResult;
 
@@ -23,7 +22,7 @@ impl Resource for WebGpuSampler {
     }
 
     fn close(self: Rc<Self>) {
-        gfx_select!(self.1 => self.0.sampler_drop(self.1));
+        self.0.sampler_drop(self.1);
     }
 }
 
@@ -73,7 +72,7 @@ pub fn op_webgpu_create_sampler(
         border_color: None, // native-only
     };
 
-    gfx_put!(device => instance.device_create_sampler(
+    gfx_put!(instance.device_create_sampler(
     device,
     &descriptor,
     None

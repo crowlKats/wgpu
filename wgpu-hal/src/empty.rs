@@ -1,5 +1,6 @@
 #![allow(unused_variables)]
 
+use crate::TlasInstance;
 use std::ops::Range;
 
 #[derive(Clone, Debug)]
@@ -38,6 +39,31 @@ impl crate::Api for Api {
     type ShaderModule = Resource;
     type RenderPipeline = Resource;
     type ComputePipeline = Resource;
+}
+
+crate::impl_dyn_resource!(Context, Encoder, Resource);
+
+impl crate::DynAccelerationStructure for Resource {}
+impl crate::DynBindGroup for Resource {}
+impl crate::DynBindGroupLayout for Resource {}
+impl crate::DynBuffer for Resource {}
+impl crate::DynCommandBuffer for Resource {}
+impl crate::DynComputePipeline for Resource {}
+impl crate::DynFence for Resource {}
+impl crate::DynPipelineCache for Resource {}
+impl crate::DynPipelineLayout for Resource {}
+impl crate::DynQuerySet for Resource {}
+impl crate::DynRenderPipeline for Resource {}
+impl crate::DynSampler for Resource {}
+impl crate::DynShaderModule for Resource {}
+impl crate::DynSurfaceTexture for Resource {}
+impl crate::DynTexture for Resource {}
+impl crate::DynTextureView for Resource {}
+
+impl std::borrow::Borrow<dyn crate::DynTexture> for Resource {
+    fn borrow(&self) -> &dyn crate::DynTexture {
+        self
+    }
 }
 
 impl crate::Instance for Context {
@@ -138,11 +164,12 @@ impl crate::Queue for Context {
 impl crate::Device for Context {
     type A = Api;
 
-    unsafe fn exit(self, queue: Context) {}
     unsafe fn create_buffer(&self, desc: &crate::BufferDescriptor) -> DeviceResult<Resource> {
         Ok(Resource)
     }
     unsafe fn destroy_buffer(&self, buffer: Resource) {}
+    unsafe fn add_raw_buffer(&self, _buffer: &Resource) {}
+
     unsafe fn map_buffer(
         &self,
         buffer: &Resource,
@@ -158,6 +185,8 @@ impl crate::Device for Context {
         Ok(Resource)
     }
     unsafe fn destroy_texture(&self, texture: Resource) {}
+    unsafe fn add_raw_texture(&self, _texture: &Resource) {}
+
     unsafe fn create_texture_view(
         &self,
         texture: &Resource,
@@ -173,7 +202,7 @@ impl crate::Device for Context {
 
     unsafe fn create_command_encoder(
         &self,
-        desc: &crate::CommandEncoderDescriptor<Api>,
+        desc: &crate::CommandEncoderDescriptor<Context>,
     ) -> DeviceResult<Encoder> {
         Ok(Encoder)
     }
@@ -188,14 +217,14 @@ impl crate::Device for Context {
     unsafe fn destroy_bind_group_layout(&self, bg_layout: Resource) {}
     unsafe fn create_pipeline_layout(
         &self,
-        desc: &crate::PipelineLayoutDescriptor<Api>,
+        desc: &crate::PipelineLayoutDescriptor<Resource>,
     ) -> DeviceResult<Resource> {
         Ok(Resource)
     }
     unsafe fn destroy_pipeline_layout(&self, pipeline_layout: Resource) {}
     unsafe fn create_bind_group(
         &self,
-        desc: &crate::BindGroupDescriptor<Api>,
+        desc: &crate::BindGroupDescriptor<Resource, Resource, Resource, Resource, Resource>,
     ) -> DeviceResult<Resource> {
         Ok(Resource)
     }
@@ -211,14 +240,14 @@ impl crate::Device for Context {
     unsafe fn destroy_shader_module(&self, module: Resource) {}
     unsafe fn create_render_pipeline(
         &self,
-        desc: &crate::RenderPipelineDescriptor<Api>,
+        desc: &crate::RenderPipelineDescriptor<Resource, Resource, Resource>,
     ) -> Result<Resource, crate::PipelineError> {
         Ok(Resource)
     }
     unsafe fn destroy_render_pipeline(&self, pipeline: Resource) {}
     unsafe fn create_compute_pipeline(
         &self,
-        desc: &crate::ComputePipelineDescriptor<Api>,
+        desc: &crate::ComputePipelineDescriptor<Resource, Resource, Resource>,
     ) -> Result<Resource, crate::PipelineError> {
         Ok(Resource)
     }
@@ -266,7 +295,7 @@ impl crate::Device for Context {
     }
     unsafe fn get_acceleration_structure_build_sizes<'a>(
         &self,
-        _desc: &crate::GetAccelerationStructureBuildSizesDescriptor<'a, Api>,
+        _desc: &crate::GetAccelerationStructureBuildSizesDescriptor<'a, Resource>,
     ) -> crate::AccelerationStructureBuildSizes {
         Default::default()
     }
@@ -277,6 +306,10 @@ impl crate::Device for Context {
         Default::default()
     }
     unsafe fn destroy_acceleration_structure(&self, _acceleration_structure: Resource) {}
+
+    fn tlas_instance_to_bytes(&self, instance: TlasInstance) -> Vec<u8> {
+        vec![]
+    }
 
     fn get_internal_counters(&self) -> wgt::HalCounters {
         Default::default()
@@ -297,13 +330,13 @@ impl crate::CommandEncoder for Encoder {
 
     unsafe fn transition_buffers<'a, T>(&mut self, barriers: T)
     where
-        T: Iterator<Item = crate::BufferBarrier<'a, Api>>,
+        T: Iterator<Item = crate::BufferBarrier<'a, Resource>>,
     {
     }
 
     unsafe fn transition_textures<'a, T>(&mut self, barriers: T)
     where
-        T: Iterator<Item = crate::TextureBarrier<'a, Api>>,
+        T: Iterator<Item = crate::TextureBarrier<'a, Resource>>,
     {
     }
 
@@ -314,7 +347,7 @@ impl crate::CommandEncoder for Encoder {
     #[cfg(webgl)]
     unsafe fn copy_external_image_to_texture<T>(
         &mut self,
-        src: &wgt::ImageCopyExternalImage,
+        src: &wgt::CopyExternalImageSourceInfo,
         dst: &Resource,
         dst_premultiplication: bool,
         regions: T,
@@ -359,7 +392,8 @@ impl crate::CommandEncoder for Encoder {
 
     // render
 
-    unsafe fn begin_render_pass(&mut self, desc: &crate::RenderPassDescriptor<Api>) {}
+    unsafe fn begin_render_pass(&mut self, desc: &crate::RenderPassDescriptor<Resource, Resource>) {
+    }
     unsafe fn end_render_pass(&mut self) {}
 
     unsafe fn set_bind_group(
@@ -387,11 +421,15 @@ impl crate::CommandEncoder for Encoder {
 
     unsafe fn set_index_buffer<'a>(
         &mut self,
-        binding: crate::BufferBinding<'a, Api>,
+        binding: crate::BufferBinding<'a, Resource>,
         format: wgt::IndexFormat,
     ) {
     }
-    unsafe fn set_vertex_buffer<'a>(&mut self, index: u32, binding: crate::BufferBinding<'a, Api>) {
+    unsafe fn set_vertex_buffer<'a>(
+        &mut self,
+        index: u32,
+        binding: crate::BufferBinding<'a, Resource>,
+    ) {
     }
     unsafe fn set_viewport(&mut self, rect: &crate::Rect<f32>, depth_range: Range<f32>) {}
     unsafe fn set_scissor_rect(&mut self, rect: &crate::Rect<u32>) {}
@@ -450,7 +488,7 @@ impl crate::CommandEncoder for Encoder {
 
     // compute
 
-    unsafe fn begin_compute_pass(&mut self, desc: &crate::ComputePassDescriptor<Api>) {}
+    unsafe fn begin_compute_pass(&mut self, desc: &crate::ComputePassDescriptor<Resource>) {}
     unsafe fn end_compute_pass(&mut self) {}
 
     unsafe fn set_compute_pipeline(&mut self, pipeline: &Resource) {}
@@ -464,7 +502,7 @@ impl crate::CommandEncoder for Encoder {
         descriptors: T,
     ) where
         Api: 'a,
-        T: IntoIterator<Item = crate::BuildAccelerationStructureDescriptor<'a, Api>>,
+        T: IntoIterator<Item = crate::BuildAccelerationStructureDescriptor<'a, Resource, Resource>>,
     {
     }
 

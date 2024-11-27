@@ -1,8 +1,8 @@
-use wgt::Backend;
+use std::sync::Arc;
 
 use crate::{
     hal_api::HalApi,
-    hub::{HubReport, Hubs},
+    hub::{Hub, HubReport},
     instance::{Instance, Surface},
     registry::{Registry, RegistryReport},
     resource_log,
@@ -11,39 +11,23 @@ use crate::{
 #[derive(Debug, PartialEq, Eq)]
 pub struct GlobalReport {
     pub surfaces: RegistryReport,
-    #[cfg(vulkan)]
-    pub vulkan: Option<HubReport>,
-    #[cfg(metal)]
-    pub metal: Option<HubReport>,
-    #[cfg(dx12)]
-    pub dx12: Option<HubReport>,
-    #[cfg(gles)]
-    pub gl: Option<HubReport>,
+    pub hub: HubReport,
 }
 
 impl GlobalReport {
     pub fn surfaces(&self) -> &RegistryReport {
         &self.surfaces
     }
-    pub fn hub_report(&self, backend: Backend) -> &HubReport {
-        match backend {
-            #[cfg(vulkan)]
-            Backend::Vulkan => self.vulkan.as_ref().unwrap(),
-            #[cfg(metal)]
-            Backend::Metal => self.metal.as_ref().unwrap(),
-            #[cfg(dx12)]
-            Backend::Dx12 => self.dx12.as_ref().unwrap(),
-            #[cfg(gles)]
-            Backend::Gl => self.gl.as_ref().unwrap(),
-            _ => panic!("HubReport is not supported on this backend"),
-        }
+    pub fn hub_report(&self) -> &HubReport {
+        &self.hub
     }
 }
 
 pub struct Global {
+    pub(crate) surfaces: Registry<Arc<Surface>>,
+    pub(crate) hub: Hub,
+    // the instance must be dropped last
     pub instance: Instance,
-    pub(crate) surfaces: Registry<Surface>,
-    pub(crate) hubs: Hubs,
 }
 
 impl Global {
@@ -51,8 +35,8 @@ impl Global {
         profiling::scope!("Global::new");
         Self {
             instance: Instance::new(name, instance_desc),
-            surfaces: Registry::without_backend(),
-            hubs: Hubs::new(),
+            surfaces: Registry::new(),
+            hub: Hub::new(),
         }
     }
 
@@ -61,10 +45,16 @@ impl Global {
     /// Refer to the creation of wgpu-hal Instance for every backend.
     pub unsafe fn from_hal_instance<A: HalApi>(name: &str, hal_instance: A::Instance) -> Self {
         profiling::scope!("Global::new");
+
+        let dyn_instance: Box<dyn hal::DynInstance> = Box::new(hal_instance);
         Self {
-            instance: A::create_instance_from_hal(name, hal_instance),
-            surfaces: Registry::without_backend(),
-            hubs: Hubs::new(),
+            instance: Instance {
+                name: name.to_owned(),
+                instance_per_backend: std::iter::once((A::VARIANT, dyn_instance)).collect(),
+                ..Default::default()
+            },
+            surfaces: Registry::new(),
+            hub: Hub::new(),
         }
     }
 
@@ -72,7 +62,7 @@ impl Global {
     ///
     /// - The raw instance handle returned must not be manually destroyed.
     pub unsafe fn instance_as_hal<A: HalApi>(&self) -> Option<&A::Instance> {
-        A::instance_as_hal(&self.instance)
+        unsafe { self.instance.as_hal::<A>() }
     }
 
     /// # Safety
@@ -82,38 +72,15 @@ impl Global {
         profiling::scope!("Global::new");
         Self {
             instance,
-            surfaces: Registry::without_backend(),
-            hubs: Hubs::new(),
+            surfaces: Registry::new(),
+            hub: Hub::new(),
         }
     }
 
     pub fn generate_report(&self) -> GlobalReport {
         GlobalReport {
             surfaces: self.surfaces.generate_report(),
-            #[cfg(vulkan)]
-            vulkan: if self.instance.vulkan.is_some() {
-                Some(self.hubs.vulkan.generate_report())
-            } else {
-                None
-            },
-            #[cfg(metal)]
-            metal: if self.instance.metal.is_some() {
-                Some(self.hubs.metal.generate_report())
-            } else {
-                None
-            },
-            #[cfg(dx12)]
-            dx12: if self.instance.dx12.is_some() {
-                Some(self.hubs.dx12.generate_report())
-            } else {
-                None
-            },
-            #[cfg(gles)]
-            gl: if self.instance.gl.is_some() {
-                Some(self.hubs.gl.generate_report())
-            } else {
-                None
-            },
+            hub: self.hub.generate_report(),
         }
     }
 }
@@ -122,27 +89,6 @@ impl Drop for Global {
     fn drop(&mut self) {
         profiling::scope!("Global::drop");
         resource_log!("Global::drop");
-        let mut surfaces_locked = self.surfaces.write();
-
-        // destroy hubs before the instance gets dropped
-        #[cfg(vulkan)]
-        {
-            self.hubs.vulkan.clear(&surfaces_locked);
-        }
-        #[cfg(metal)]
-        {
-            self.hubs.metal.clear(&surfaces_locked);
-        }
-        #[cfg(dx12)]
-        {
-            self.hubs.dx12.clear(&surfaces_locked);
-        }
-        #[cfg(gles)]
-        {
-            self.hubs.gl.clear(&surfaces_locked);
-        }
-
-        surfaces_locked.map.clear();
     }
 }
 

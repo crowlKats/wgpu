@@ -66,14 +66,37 @@ impl crate::Api for Api {
     type ShaderModule = ShaderModule;
     type RenderPipeline = RenderPipeline;
     type ComputePipeline = ComputePipeline;
-    type PipelineCache = ();
+    type PipelineCache = PipelineCache;
 
     type AccelerationStructure = AccelerationStructure;
 }
 
-pub struct Instance {
-    managed_metal_layer_delegate: surface::HalManagedMetalLayerDelegate,
-}
+crate::impl_dyn_resource!(
+    Adapter,
+    AccelerationStructure,
+    BindGroup,
+    BindGroupLayout,
+    Buffer,
+    CommandBuffer,
+    CommandEncoder,
+    ComputePipeline,
+    Device,
+    Fence,
+    Instance,
+    PipelineCache,
+    PipelineLayout,
+    QuerySet,
+    Queue,
+    RenderPipeline,
+    Sampler,
+    ShaderModule,
+    Surface,
+    SurfaceTexture,
+    Texture,
+    TextureView
+);
+
+pub struct Instance {}
 
 impl Instance {
     pub fn create_surface_from_layer(&self, layer: &metal::MetalLayerRef) -> Surface {
@@ -88,9 +111,7 @@ impl crate::Instance for Instance {
         profiling::scope!("Init Metal Backend");
         // We do not enable metal validation based on the validation flags as it affects the entire
         // process. Instead, we enable the validation inside the test harness itself in tests/src/native.rs.
-        Ok(Instance {
-            managed_metal_layer_delegate: surface::HalManagedMetalLayerDelegate::new(),
-        })
+        Ok(Instance {})
     }
 
     unsafe fn create_surface(
@@ -101,16 +122,12 @@ impl crate::Instance for Instance {
         match window_handle {
             #[cfg(target_os = "ios")]
             raw_window_handle::RawWindowHandle::UiKit(handle) => {
-                let _ = &self.managed_metal_layer_delegate;
-                Ok(unsafe { Surface::from_view(handle.ui_view.as_ptr(), None) })
+                Ok(unsafe { Surface::from_view(handle.ui_view.cast()) })
             }
             #[cfg(target_os = "macos")]
-            raw_window_handle::RawWindowHandle::AppKit(handle) => Ok(unsafe {
-                Surface::from_view(
-                    handle.ns_view.as_ptr(),
-                    Some(&self.managed_metal_layer_delegate),
-                )
-            }),
+            raw_window_handle::RawWindowHandle::AppKit(handle) => {
+                Ok(unsafe { Surface::from_view(handle.ns_view.cast()) })
+            }
             _ => Err(crate::InstanceError::new(format!(
                 "window handle {window_handle:?} is not a Metal-compatible handle"
             ))),
@@ -272,6 +289,7 @@ struct PrivateCapabilities {
     supports_simd_scoped_operations: bool,
     int64: bool,
     int64_atomics: bool,
+    supports_shared_event: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -342,7 +360,6 @@ pub struct Device {
 }
 
 pub struct Surface {
-    view: Option<NonNull<objc::runtime::Object>>,
     render_layer: Mutex<metal::MetalLayer>,
     swapchain_format: RwLock<Option<wgt::TextureFormat>>,
     extent: RwLock<wgt::Extent3d>,
@@ -362,8 +379,16 @@ pub struct SurfaceTexture {
     present_with_transaction: bool,
 }
 
+impl crate::DynSurfaceTexture for SurfaceTexture {}
+
 impl std::borrow::Borrow<Texture> for SurfaceTexture {
     fn borrow(&self) -> &Texture {
+        &self.texture
+    }
+}
+
+impl std::borrow::Borrow<dyn crate::DynTexture> for SurfaceTexture {
+    fn borrow(&self) -> &dyn crate::DynTexture {
         &self.texture
     }
 }
@@ -404,6 +429,10 @@ impl crate::Queue for Queue {
                 signal_fence
                     .pending_command_buffers
                     .push((signal_value, raw.to_owned()));
+
+                if let Some(shared_event) = signal_fence.shared_event.as_ref() {
+                    raw.encode_signal_event(shared_event, signal_value);
+                }
                 // only return an extra one if it's extra
                 match command_buffers.last() {
                     Some(_) => None,
@@ -460,13 +489,15 @@ pub struct Buffer {
 unsafe impl Send for Buffer {}
 unsafe impl Sync for Buffer {}
 
+impl crate::DynBuffer for Buffer {}
+
 impl Buffer {
     fn as_raw(&self) -> BufferPtr {
         unsafe { NonNull::new_unchecked(self.raw.as_ptr()) }
     }
 }
 
-impl crate::BufferBinding<'_, Api> {
+impl crate::BufferBinding<'_, Buffer> {
     fn resolve_size(&self) -> wgt::BufferAddress {
         match self.size {
             Some(size) => size.get(),
@@ -485,6 +516,8 @@ pub struct Texture {
     copy_size: crate::CopyExtent,
 }
 
+impl crate::DynTexture for Texture {}
+
 unsafe impl Send for Texture {}
 unsafe impl Sync for Texture {}
 
@@ -493,6 +526,8 @@ pub struct TextureView {
     raw: metal::Texture,
     aspects: crate::FormatAspects,
 }
+
+impl crate::DynTextureView for TextureView {}
 
 unsafe impl Send for TextureView {}
 unsafe impl Sync for TextureView {}
@@ -508,6 +543,8 @@ pub struct Sampler {
     raw: metal::SamplerState,
 }
 
+impl crate::DynSampler for Sampler {}
+
 unsafe impl Send for Sampler {}
 unsafe impl Sync for Sampler {}
 
@@ -522,6 +559,8 @@ pub struct BindGroupLayout {
     /// Sorted list of BGL entries.
     entries: Arc<[wgt::BindGroupLayoutEntry]>,
 }
+
+impl crate::DynBindGroupLayout for BindGroupLayout {}
 
 #[derive(Clone, Debug, Default)]
 struct ResourceData<T> {
@@ -604,6 +643,8 @@ pub struct PipelineLayout {
     per_stage_map: MultiStageResources,
 }
 
+impl crate::DynPipelineLayout for PipelineLayout {}
+
 trait AsNative {
     type Native;
     fn from(native: &Self::Native) -> Self;
@@ -677,6 +718,8 @@ pub struct BindGroup {
     textures: Vec<TexturePtr>,
 }
 
+impl crate::DynBindGroup for BindGroup {}
+
 unsafe impl Send for BindGroup {}
 unsafe impl Sync for BindGroup {}
 
@@ -685,6 +728,8 @@ pub struct ShaderModule {
     naga: crate::NagaShader,
     runtime_checks: bool,
 }
+
+impl crate::DynShaderModule for ShaderModule {}
 
 #[derive(Debug, Default)]
 struct PipelineStageInfo {
@@ -743,6 +788,8 @@ pub struct RenderPipeline {
 unsafe impl Send for RenderPipeline {}
 unsafe impl Sync for RenderPipeline {}
 
+impl crate::DynRenderPipeline for RenderPipeline {}
+
 #[derive(Debug)]
 pub struct ComputePipeline {
     raw: metal::ComputePipelineState,
@@ -756,6 +803,8 @@ pub struct ComputePipeline {
 unsafe impl Send for ComputePipeline {}
 unsafe impl Sync for ComputePipeline {}
 
+impl crate::DynComputePipeline for ComputePipeline {}
+
 #[derive(Debug, Clone)]
 pub struct QuerySet {
     raw_buffer: metal::Buffer,
@@ -763,6 +812,8 @@ pub struct QuerySet {
     counter_sample_buffer: Option<metal::CounterSampleBuffer>,
     ty: wgt::QueryType,
 }
+
+impl crate::DynQuerySet for QuerySet {}
 
 unsafe impl Send for QuerySet {}
 unsafe impl Sync for QuerySet {}
@@ -772,7 +823,10 @@ pub struct Fence {
     completed_value: Arc<atomic::AtomicU64>,
     /// The pending fence values have to be ascending.
     pending_command_buffers: Vec<(crate::FenceValue, metal::CommandBuffer)>,
+    shared_event: Option<metal::SharedEvent>,
 }
+
+impl crate::DynFence for Fence {}
 
 unsafe impl Send for Fence {}
 unsafe impl Sync for Fence {}
@@ -792,6 +846,10 @@ impl Fence {
         let latest = self.get_latest();
         self.pending_command_buffers
             .retain(|&(value, _)| value > latest);
+    }
+
+    pub fn raw_shared_event(&self) -> Option<&metal::SharedEvent> {
+        self.shared_event.as_ref()
     }
 }
 
@@ -871,8 +929,17 @@ pub struct CommandBuffer {
     raw: metal::CommandBuffer,
 }
 
+impl crate::DynCommandBuffer for CommandBuffer {}
+
 unsafe impl Send for CommandBuffer {}
 unsafe impl Sync for CommandBuffer {}
 
 #[derive(Debug)]
+pub struct PipelineCache;
+
+impl crate::DynPipelineCache for PipelineCache {}
+
+#[derive(Debug)]
 pub struct AccelerationStructure;
+
+impl crate::DynAccelerationStructure for AccelerationStructure {}
