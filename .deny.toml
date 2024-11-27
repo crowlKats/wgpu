@@ -11,7 +11,7 @@ skip-tree = [
 
     # introduced by Deno, to be investigated
     { name = "deno_core", version = "0.321.0" },
-    { name = "deno_permissions", version = "0.39.0" }
+    { name = "deno_permissions", version = "0.39.0" },
 ]
 skip = [
     { name = "hlsl-snapshots", version = "0.1.0" },
