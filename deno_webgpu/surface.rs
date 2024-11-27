@@ -2,7 +2,6 @@
 
 use super::wgpu_types;
 use super::WebGpuResult;
-use deno_core::error::AnyError;
 use deno_core::op2;
 use deno_core::OpState;
 use deno_core::Resource;
@@ -10,6 +9,16 @@ use deno_core::ResourceId;
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::rc::Rc;
+
+#[derive(Debug, thiserror::Error)]
+pub enum SurfaceError {
+    #[error(transparent)]
+    Resource(deno_core::error::AnyError),
+    #[error("Invalid Surface Status")]
+    InvalidStatus,
+    #[error(transparent)]
+    Surface(wgpu_core::present::SurfaceError),
+}
 
 pub struct WebGpuSurface(pub crate::Instance, pub wgpu_core::id::SurfaceId);
 impl Resource for WebGpuSurface {
@@ -41,7 +50,7 @@ pub struct SurfaceConfigureArgs {
 pub fn op_webgpu_surface_configure(
     state: &mut OpState,
     #[serde] args: SurfaceConfigureArgs,
-) -> Result<WebGpuResult, AnyError> {
+) -> Result<WebGpuResult, deno_core::error::AnyError> {
     let instance = state.borrow::<super::Instance>();
     let device_resource = state
         .resource_table
@@ -74,12 +83,17 @@ pub fn op_webgpu_surface_get_current_texture(
     state: &mut OpState,
     #[smi] _device_rid: ResourceId,
     #[smi] surface_rid: ResourceId,
-) -> Result<WebGpuResult, AnyError> {
+) -> Result<WebGpuResult, SurfaceError> {
     let instance = state.borrow::<super::Instance>();
-    let surface_resource = state.resource_table.get::<WebGpuSurface>(surface_rid)?;
+    let surface_resource = state
+        .resource_table
+        .get::<WebGpuSurface>(surface_rid)
+        .map_err(SurfaceError::Resource)?;
     let surface = surface_resource.1;
 
-    let output = instance.surface_get_current_texture(surface, None)?;
+    let output = instance
+        .surface_get_current_texture(surface, None)
+        .map_err(SurfaceError::Surface)?;
 
     match output.status {
         wgpu_types::SurfaceStatus::Good | wgpu_types::SurfaceStatus::Suboptimal => {
@@ -90,7 +104,7 @@ pub fn op_webgpu_surface_get_current_texture(
             });
             Ok(WebGpuResult::rid(rid))
         }
-        _ => Err(AnyError::msg("Invalid Surface Status")),
+        _ => Err(SurfaceError::InvalidStatus),
     }
 }
 
@@ -99,12 +113,17 @@ pub fn op_webgpu_surface_present(
     state: &mut OpState,
     #[smi] _device_rid: ResourceId,
     #[smi] surface_rid: ResourceId,
-) -> Result<(), AnyError> {
+) -> Result<(), SurfaceError> {
     let instance = state.borrow::<super::Instance>();
-    let surface_resource = state.resource_table.get::<WebGpuSurface>(surface_rid)?;
+    let surface_resource = state
+        .resource_table
+        .get::<WebGpuSurface>(surface_rid)
+        .map_err(SurfaceError::Resource)?;
     let surface = surface_resource.1;
 
-    instance.surface_present(surface)?;
+    instance
+        .surface_present(surface)
+        .map_err(SurfaceError::Surface)?;
 
     Ok(())
 }

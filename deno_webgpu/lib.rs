@@ -2,7 +2,6 @@
 #![cfg(not(target_arch = "wasm32"))]
 #![warn(unsafe_op_in_unsafe_fn)]
 
-use deno_core::error::AnyError;
 use deno_core::op2;
 use deno_core::OpState;
 use deno_core::Resource;
@@ -16,7 +15,6 @@ use std::rc::Rc;
 pub use wgpu_core;
 pub use wgt as wgpu_types;
 
-use error::DomExceptionOperationError;
 use error::WebGpuResult;
 
 pub const UNSTABLE_FEATURE_NAME: &str = "webgpu";
@@ -53,6 +51,14 @@ pub mod sampler;
 pub mod shader;
 pub mod surface;
 pub mod texture;
+
+#[derive(Debug, thiserror::Error)]
+pub enum InitError {
+    #[error(transparent)]
+    Resource(deno_core::error::AnyError),
+    #[error(transparent)]
+    RequestDevice(wgpu_core::instance::RequestDeviceError),
+}
 
 pub type Instance = std::sync::Arc<wgpu_core::global::Global>;
 
@@ -352,7 +358,7 @@ pub struct GpuAdapterRes {
     rid: ResourceId,
     limits: wgpu_types::Limits,
     features: Vec<&'static str>,
-    is_software: bool,
+    is_fallback: bool,
 }
 
 #[derive(Serialize)]
@@ -362,7 +368,6 @@ pub struct GpuDeviceRes {
     queue_rid: ResourceId,
     limits: wgpu_types::Limits,
     features: Vec<&'static str>,
-    is_software: bool,
 }
 
 #[op2]
@@ -371,14 +376,8 @@ pub fn op_webgpu_request_adapter(
     state: Rc<RefCell<OpState>>,
     #[serde] power_preference: Option<wgpu_types::PowerPreference>,
     force_fallback_adapter: bool,
-) -> Result<GpuAdapterResOrErr, AnyError> {
+) -> GpuAdapterResOrErr {
     let mut state = state.borrow_mut();
-
-    // TODO(bartlomieju): replace with `state.feature_checker.check_or_exit`
-    // once we phase out `check_or_exit_with_legacy_fallback`
-    state
-        .feature_checker
-        .check_or_exit_with_legacy_fallback(UNSTABLE_FEATURE_NAME, "navigator.gpu.requestAdapter");
 
     let backends = std::env::var("DENO_WEBGPU_BACKEND").map_or_else(
         |_| wgpu_types::Backends::all(),
@@ -409,9 +408,9 @@ pub fn op_webgpu_request_adapter(
     let adapter = match res {
         Ok(adapter) => adapter,
         Err(err) => {
-            return Ok(GpuAdapterResOrErr::Error {
+            return GpuAdapterResOrErr::Error {
                 err: err.to_string(),
-            })
+            }
         }
     };
     let adapter_features = instance.adapter_features(adapter);
@@ -422,12 +421,13 @@ pub fn op_webgpu_request_adapter(
 
     let rid = state.resource_table.add(WebGpuAdapter(instance, adapter));
 
-    Ok(GpuAdapterResOrErr::Features(GpuAdapterRes {
+    GpuAdapterResOrErr::Features(GpuAdapterRes {
         rid,
         features,
         limits: adapter_limits,
-        is_software: false,
-    }))
+        // TODO(lucacasonato): report correctly from wgpu
+        is_fallback: false,
+    })
 }
 
 #[derive(Deserialize)]
@@ -640,9 +640,12 @@ pub fn op_webgpu_request_device(
     #[string] label: String,
     #[serde] required_features: GpuRequiredFeatures,
     #[serde] required_limits: Option<wgpu_types::Limits>,
-) -> Result<GpuDeviceRes, AnyError> {
+) -> Result<GpuDeviceRes, InitError> {
     let mut state = state.borrow_mut();
-    let adapter_resource = state.resource_table.take::<WebGpuAdapter>(adapter_rid)?;
+    let adapter_resource = state
+        .resource_table
+        .take::<WebGpuAdapter>(adapter_rid)
+        .map_err(InitError::Resource)?;
     let adapter = adapter_resource.1;
     let instance = state.borrow::<Instance>();
 
@@ -665,7 +668,7 @@ pub fn op_webgpu_request_device(
     );
     adapter_resource.close();
 
-    let (device, queue) = res.map_err(|err| DomExceptionOperationError::new(&err.to_string()))?;
+    let (device, queue) = res.map_err(InitError::RequestDevice)?;
 
     let device_features = instance.device_features(device);
     let features = deserialize_features(&device_features);
@@ -683,8 +686,6 @@ pub fn op_webgpu_request_device(
         queue_rid,
         features,
         limits,
-        // TODO(lucacasonato): report correctly from wgpu
-        is_software: false,
     })
 }
 
@@ -702,9 +703,9 @@ pub struct GPUAdapterInfo {
 pub fn op_webgpu_request_adapter_info(
     state: Rc<RefCell<OpState>>,
     #[smi] adapter_rid: ResourceId,
-) -> Result<GPUAdapterInfo, AnyError> {
-    let mut state = state.borrow_mut();
-    let adapter_resource = state.resource_table.take::<WebGpuAdapter>(adapter_rid)?;
+) -> Result<GPUAdapterInfo, deno_core::error::AnyError> {
+    let state = state.borrow_mut();
+    let adapter_resource = state.resource_table.get::<WebGpuAdapter>(adapter_rid)?;
     let adapter = adapter_resource.1;
     let instance = state.borrow::<Instance>();
 
@@ -750,7 +751,7 @@ impl From<GpuQueryType> for wgpu_types::QueryType {
 pub fn op_webgpu_create_query_set(
     state: &mut OpState,
     #[serde] args: CreateQuerySetArgs,
-) -> Result<WebGpuResult, AnyError> {
+) -> Result<WebGpuResult, deno_core::error::AnyError> {
     let device_resource = state.resource_table.get::<WebGpuDevice>(args.device_rid)?;
     let device = device_resource.1;
     let instance = state.borrow::<Instance>();
